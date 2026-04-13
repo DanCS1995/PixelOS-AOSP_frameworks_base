@@ -371,6 +371,58 @@ public class PackageManagerService implements PackageSender, TestUtilityService 
     private static final int SE_UID = Process.SE_UID;
     private static final int NETWORKSTACK_UID = Process.NETWORK_STACK_UID;
     private static final int UWB_UID = Process.UWB_UID;
+    private static final String VELVET_PACKAGE = "com.google.android.googlequicksearchbox";
+    private static final String VELVET_NEW_SEARCH_CLASS =
+        "com.google.android.googlequicksearchbox.OneSearchAimActivity";
+    
+    private void ensureOneSearchEnabledForUser(int userId) {
+        final ComponentName component =
+                new ComponentName(VELVET_PACKAGE, VELVET_NEW_SEARCH_CLASS);
+
+        boolean changed = false;
+
+        synchronized (mLock) {
+            final PackageSetting pkgSetting = mSettings.getPackageLPr(VELVET_PACKAGE);
+            if (pkgSetting == null || pkgSetting.getPkg() == null) {
+                return;
+            }
+
+            final AndroidPackage pkg = pkgSetting.getPkg();
+            if (!AndroidPackageUtils.hasComponentClassName(pkg, VELVET_NEW_SEARCH_CLASS)) {
+                return;
+            }
+
+            final Computer snapshot = snapshotComputer();
+            final int currentState = snapshot.getComponentEnabledSettingInternal(
+                    component, Process.SYSTEM_UID, userId);
+
+            if (currentState == COMPONENT_ENABLED_STATE_ENABLED) {
+                return;
+            }
+
+            final ComponentEnabledSetting setting = new ComponentEnabledSetting(
+                    component,
+                    COMPONENT_ENABLED_STATE_ENABLED,
+                    PackageManager.DONT_KILL_APP
+            );
+
+            changed = setEnabledSettingInternalLocked(
+                    snapshot,
+                    pkgSetting,
+                    setting,
+                    userId,
+                    "android"
+            );
+
+            if (changed) {
+                Slog.i(TAG, "Enabled OneSearchAimActivity for user " + userId);
+            }
+        }
+
+        if (changed) {
+            scheduleWritePackageRestrictions(userId);
+        }
+    }
 
     static final int SCAN_NO_DEX = 1 << 0;
     static final int SCAN_UPDATE_SIGNATURE = 1 << 1;
@@ -4044,6 +4096,19 @@ public class PackageManagerService implements PackageSender, TestUtilityService 
                 // app details activity
                 final String packageName = setting.getPackageName();
                 final String className = setting.getClassName();
+
+                if (VELVET_PACKAGE.equals(packageName)
+                        && VELVET_NEW_SEARCH_CLASS.equals(className)) {
+                    final int newState = setting.getEnabledState();
+                    if (newState != COMPONENT_ENABLED_STATE_ENABLED
+                            && newState != COMPONENT_ENABLED_STATE_DEFAULT) {
+                        Slog.w(TAG, "Blocking disable of component: "
+                                + setting.getComponentName().flattenToShortString());
+                        updateAllowed[i] = false;
+                        continue;
+                    }
+                }
+
                 if (!allowedByPermission
                         && PackageManager.APP_DETAILS_ACTIVITY_CLASS_NAME.equals(className)) {
                     throw new SecurityException("Cannot disable a system-generated component");
@@ -4466,6 +4531,7 @@ public class PackageManagerService implements PackageSender, TestUtilityService 
         }
 
         PackageMetrics.logInvalidationMetrics();
+        ensureOneSearchEnabledForUser(UserHandle.USER_SYSTEM);
     }
 
     public PackageFreezer freezePackage(String packageName, @CanBeALL @UserIdInt int userId,
